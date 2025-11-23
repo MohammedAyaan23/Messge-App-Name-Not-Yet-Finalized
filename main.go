@@ -132,6 +132,87 @@ func insertMessage(senderID, receiverID, content string, delivered bool) (string
 	return id, createdAt, err
 }
 
+// fetchUndeliveredMessages retrieves all undelivered messages for a user
+func fetchUndeliveredMessages(receiverID string) ([]wsOutgoing, error) {
+	rows, err := db.Query(`
+		SELECT id, sender_id, content, created_at
+		FROM messages
+		WHERE receiver_id = $1 AND delivered = false
+		ORDER BY created_at ASC
+	`, receiverID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []wsOutgoing
+	for rows.Next() {
+		var msg wsOutgoing
+		err := rows.Scan(&msg.MessageID, &msg.From, &msg.Message, &msg.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		msg.Delivered = false // will be marked true after sending
+		messages = append(messages, msg)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return messages, nil
+}
+
+// markMessageAsDelivered updates the delivered status of a message
+func markMessageAsDelivered(messageID string) error {
+	_, err := db.Exec(`
+		UPDATE messages
+		SET delivered = true
+		WHERE id = $1
+	`, messageID)
+	return err
+}
+
+// deliverOfflineMessages fetches and sends all undelivered messages to a client
+func deliverOfflineMessages(client *Client) {
+	messages, err := fetchUndeliveredMessages(client.UserID)
+	if err != nil {
+		log.Printf("Error fetching undelivered messages for user %s: %v", client.UserID, err)
+		return
+	}
+
+	if len(messages) == 0 {
+		log.Printf("No undelivered messages for user %s", client.UserID)
+		return
+	}
+
+	log.Printf("Delivering %d offline messages to user %s", len(messages), client.UserID)
+
+	for _, msg := range messages {
+		// Mark as delivered before sending
+		msg.Delivered = true
+		encoded, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("Error encoding message %s: %v", msg.MessageID, err)
+			continue
+		}
+
+		// Try to send to client
+		select {
+		case client.Send <- encoded:
+			// Successfully queued, now mark as delivered in DB
+			if err := markMessageAsDelivered(msg.MessageID); err != nil {
+				log.Printf("Error marking message %s as delivered: %v", msg.MessageID, err)
+			} else {
+				log.Printf("Delivered offline message %s to user %s", msg.MessageID, client.UserID)
+			}
+		default:
+			// Channel full, skip this message for now
+			log.Printf("Client %s send channel full, skipping message %s", client.UserID, msg.MessageID)
+		}
+	}
+}
+
 // ---------- WebSocket Handler ----------
 func wsHandler(h *Hub) echo.HandlerFunc {
 	return func(c echo.Context) error {
@@ -175,6 +256,9 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 		}
 
 		h.register <- client
+
+		// Deliver any offline messages
+		go deliverOfflineMessages(client)
 
 		// Start writer and reader
 		go writePump(client, h)
