@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/golang-jwt/jwt"
 	"github.com/gorilla/websocket"
 	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
@@ -216,55 +216,128 @@ func deliverOfflineMessages(client *Client) {
 // ---------- WebSocket Handler ----------
 func wsHandler(h *Hub) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		// Extract token from query param
+
 		tokenStr := c.QueryParam("token")
 		if tokenStr == "" {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing token"})
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"error": "missing access token",
+			})
 		}
 
-		// Parse and validate token
+		//---------------------------------------------------------
+		// Parse token using classic JWT API (v3/v4)
+		//---------------------------------------------------------
 		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
 			return jwtSecret, nil
 		})
-		if err != nil || !token.Valid {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
-		}
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token claims"})
-		}
-		userIDraw, ok := claims["user_id"]
-		if !ok {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "token missing user_id"})
-		}
-		userID, ok := userIDraw.(string)
-		if !ok {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "user_id claim invalid"})
-		}
 
-		// Upgrade to WebSocket connection
-		wsConn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+		//---------------------------------------------------------
+		// Detect expiration using ValidationError
+		//---------------------------------------------------------
+		var expired bool
 		if err != nil {
-			log.Println("upgrade error:", err)
-			return err
+			if ve, ok := err.(*jwt.ValidationError); ok {
+				if ve.Errors&jwt.ValidationErrorExpired != 0 {
+					expired = true
+				}
+			}
 		}
 
-		client := &Client{
-			UserID: userID,
-			Conn:   wsConn,
-			Send:   make(chan []byte, 32),
+		//---------------------------------------------------------
+		// 1) Access token valid → upgrade WS
+		//---------------------------------------------------------
+		if err == nil && token.Valid {
+			claims := token.Claims.(jwt.MapClaims)
+			userID, ok := claims["user_id"].(string)
+			if !ok {
+				return c.JSON(http.StatusUnauthorized, map[string]string{
+					"error": "invalid token claims",
+				})
+			}
+
+			wsConn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+			if err != nil {
+				return err
+			}
+
+			client := &Client{
+				UserID: userID,
+				Conn:   wsConn,
+				Send:   make(chan []byte, 32),
+			}
+
+			h.register <- client
+			go deliverOfflineMessages(client)
+			go writePump(client, h)
+			readPump(client, h)
+			return nil
 		}
 
-		h.register <- client
+		//---------------------------------------------------------
+		// 2) Invalid but NOT expired → reject
+		//---------------------------------------------------------
+		if err != nil && !expired {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"error":  "invalid access token",
+				"detail": err.Error(),
+			})
+		}
 
-		// Deliver any offline messages
-		go deliverOfflineMessages(client)
+		//---------------------------------------------------------
+		// 3) EXPIRED access token → try refresh token cookie
+		//---------------------------------------------------------
+		refreshCookie, err := c.Cookie("refresh_token")
+		if err != nil {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"error":  "access_token_expired",
+				"detail": "refresh token missing",
+			})
+		}
 
-		// Start writer and reader
-		go writePump(client, h)
-		readPump(client, h)
+		refreshTok := refreshCookie.Value
 
-		return nil
+		var dbUserID string
+		var expiresAt time.Time
+
+		err = db.QueryRow(`
+			SELECT user_id, expires_at
+			FROM refresh_tokens
+			WHERE token = $1
+		`, refreshTok).Scan(&dbUserID, &expiresAt)
+
+		if err == sql.ErrNoRows {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"error": "invalid refresh token",
+			})
+		}
+
+		if time.Now().After(expiresAt) {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"error": "refresh token expired",
+			})
+		}
+
+		//---------------------------------------------------------
+		// 4) Refresh token valid → issue new access token
+		//---------------------------------------------------------
+		newAccess, err := generateJWT(dbUserID, 30*time.Minute)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": "failed to create new access token",
+			})
+		}
+
+		//---------------------------------------------------------
+		// 5) Tell client to retry WS connection with new token
+		//---------------------------------------------------------
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"error":            "access_token_expired",
+			"new_access_token": newAccess,
+			"retry_ws":         true,
+		})
 	}
 }
 
@@ -451,6 +524,7 @@ func main() {
 	// Public routes
 	e.POST("/signup", signupHandler)
 	e.POST("/login", loginHandler)
+	e.POST("/refresh", refreshTokenHandler)
 
 	// JWT protected routes
 	api := e.Group("/api")
@@ -476,34 +550,36 @@ func loginHandler(c echo.Context) error {
 	if err := c.Bind(&creds); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
 	}
+
 	if creds.Email == "" || creds.Password == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Email and password are required"})
 	}
 
-	// Fetch stored user
+	// fetch user
 	var userID string
 	var hashedPassword string
 	err := db.QueryRow(`SELECT id, password_hash FROM users WHERE email=$1`, creds.Email).
 		Scan(&userID, &hashedPassword)
+
 	if err == sql.ErrNoRows {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid email or password"})
 	}
 	if err != nil {
-		log.Println("DB query error:", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database error"})
 	}
 
-	// Verify password
+	// password check
 	if bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(creds.Password)) != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid email or password"})
 	}
 
-	// Generate tokens
+	// generate access token
 	accessToken, err := generateJWT(userID, 30*time.Minute)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create access token"})
 	}
 
+	// generate refresh token
 	refreshToken, err := generateRefreshToken()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create refresh token"})
@@ -511,23 +587,111 @@ func loginHandler(c echo.Context) error {
 
 	expiry := time.Now().Add(7 * 24 * time.Hour)
 
-	// Optional: delete old refresh tokens for same user
+	// remove old refresh tokens
 	_, _ = db.Exec(`DELETE FROM refresh_tokens WHERE user_id=$1`, userID)
 
-	// Store new refresh token
+	// insert refresh token
 	_, err = db.Exec(`
 		INSERT INTO refresh_tokens (user_id, token, expires_at)
 		VALUES ($1, $2, $3)
 	`, userID, refreshToken, expiry)
 	if err != nil {
-		log.Println("Insert refresh token error:", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to store refresh token"})
 	}
 
+	// SET HTTPONLY COOKIE
+	cookie := &http.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false, // set true in production
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expiry,
+	}
+	http.SetCookie(c.Response(), cookie)
+
+	// only return access token
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"message":       "Login successful",
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
+		"message":      "Login successful",
+		"access_token": accessToken,
+	})
+}
+
+func refreshTokenHandler(c echo.Context) error {
+	// read refresh token from cookie
+	cookie, err := c.Cookie("refresh_token")
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Missing refresh token"})
+	}
+
+	refreshToken := cookie.Value
+
+	// validate refresh token in DB
+	var userID string
+	var expiresAt time.Time
+
+	err = db.QueryRow(`
+		SELECT user_id, expires_at 
+		FROM refresh_tokens 
+		WHERE token = $1
+	`, refreshToken).Scan(&userID, &expiresAt)
+
+	if err == sql.ErrNoRows {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid refresh token"})
+	}
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database error"})
+	}
+
+	if time.Now().After(expiresAt) {
+		// cleanup expired
+		_, _ = db.Exec(`DELETE FROM refresh_tokens WHERE token = $1`, refreshToken)
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Refresh token expired"})
+	}
+
+	// create new access token
+	newAccessToken, err := generateJWT(userID, 30*time.Minute)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create access token"})
+	}
+
+	// rotate refresh token for security
+	newRefreshToken, err := generateRefreshToken()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create refresh token"})
+	}
+
+	newExpiry := time.Now().Add(7 * 24 * time.Hour)
+
+	// update DB
+	_, err = db.Exec(`
+		UPDATE refresh_tokens
+		SET token = $1, expires_at = $2, updated_at = NOW()
+		WHERE token = $3
+	`, newRefreshToken, newExpiry, refreshToken)
+
+	if err != nil {
+		// deliver access token even if rotation fails
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"access_token": newAccessToken,
+		})
+	}
+
+	// SET NEW COOKIE
+	newCookie := &http.Cookie{
+		Name:     "refresh_token",
+		Value:    newRefreshToken,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false, // true in production
+		SameSite: http.SameSiteLaxMode,
+		Expires:  newExpiry,
+	}
+	http.SetCookie(c.Response(), newCookie)
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"access_token": newAccessToken,
 	})
 }
 
@@ -578,7 +742,7 @@ func signupHandler(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Password hashing failed"})
 	}
 
-	// Insert new user and return their UUID
+	// Insert new user
 	var userID string
 	err = db.QueryRow(`
 		INSERT INTO users (email, user_name, password_hash)
@@ -586,23 +750,24 @@ func signupHandler(c echo.Context) error {
 		RETURNING id
 	`, u.Email, u.UserName, string(hashedPassword)).Scan(&userID)
 	if err != nil {
-		log.Println("Insert error:", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create user"})
 	}
 
-	// Generate access token (valid 30 min)
+	// Generate access token
 	accessToken, err := generateJWT(userID, 30*time.Minute)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create access token"})
 	}
 
-	// Generate refresh token (valid 7 days)
+	// Generate refresh token
 	refreshToken, err := generateRefreshToken()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create refresh token"})
 	}
 
 	expiry := time.Now().Add(7 * 24 * time.Hour)
+
+	// Store refresh token
 	_, err = db.Exec(`
 		INSERT INTO refresh_tokens (user_id, token, expires_at)
 		VALUES ($1, $2, $3)
@@ -611,10 +776,21 @@ func signupHandler(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to store refresh token"})
 	}
 
+	// Set httpOnly refresh token cookie
+	cookie := &http.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false, // true in production
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expiry,
+	}
+	http.SetCookie(c.Response(), cookie)
+
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"message":       "User registered successfully",
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
+		"message":      "User registered successfully",
+		"access_token": accessToken,
 	})
 }
 
