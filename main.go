@@ -21,11 +21,11 @@ import (
 
 // ---------- Database Constants ----------
 const (
-	DB_USER     = "msg_admin"
-	DB_PASSWORD = "54321"
-	DB_NAME     = "message_app"
-	DB_HOST     = "localhost" // <-- this is for building docker file  but on local testing use "localhost"
-	DB_PORT     = "5432"
+	DB_USER     = ""
+	DB_PASSWORD = ""
+	DB_NAME     = ""
+	DB_HOST     = "" // <-- this is for building docker file  but on local testing use "localhost"
+	DB_PORT     = ""
 )
 
 // ---------- Global Variables ----------
