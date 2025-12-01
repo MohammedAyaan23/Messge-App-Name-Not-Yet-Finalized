@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    image: message_app:latest
+    ports:
+      - "80:8080"
+    restart: unless-stopped
+    networks:
+      backend-network:
+        ipv4_address: 172.20.0.2 # Assign a specific IP to your backend
+
+networks:
+  backend-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
