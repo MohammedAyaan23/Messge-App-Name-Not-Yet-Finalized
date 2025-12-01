@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt"
 	"github.com/gorilla/websocket"
-	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
@@ -24,7 +24,7 @@ const (
 	DB_USER     = "msg_admin"
 	DB_PASSWORD = "54321"
 	DB_NAME     = "message_app"
-	DB_HOST     = "localhost"
+	DB_HOST     = "localhost" // <-- this is for building docker file  but on local testing use "localhost"
 	DB_PORT     = "5432"
 )
 
@@ -61,6 +61,7 @@ type SearchResult struct {
 type wsIncoming struct {
 	To      string `json:"to"`      // receiver user_id (UUID string)
 	Message string `json:"message"` // the message text
+	TempID  string `json:"temp_id"`
 }
 
 type wsOutgoing struct {
@@ -69,6 +70,17 @@ type wsOutgoing struct {
 	MessageID string    `json:"message_id"`
 	Delivered bool      `json:"delivered"`
 	CreatedAt time.Time `json:"created_at"`
+	TempID    string    `json:"temp_id"`
+}
+
+// Conversation History Model
+type ConversationMessage struct {
+	MessageID  string    `json:"message_id"`
+	SenderID   string    `json:"sender_id"`
+	ReceiverID string    `json:"receiver_id"`
+	Content    string    `json:"content"`
+	Delivered  bool      `json:"delivered"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // ---------- WebSocket Client & Hub ----------
@@ -216,6 +228,7 @@ func deliverOfflineMessages(client *Client) {
 // ---------- WebSocket Handler ----------
 func wsHandler(h *Hub) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		fmt.Println("inside ws handler")
 
 		tokenStr := c.QueryParam("token")
 		if tokenStr == "" {
@@ -223,6 +236,7 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 				"error": "missing access token",
 			})
 		}
+		fmt.Println("tokenStr", tokenStr)
 
 		//---------------------------------------------------------
 		// Parse token using classic JWT API (v3/v4)
@@ -233,6 +247,7 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 			}
 			return jwtSecret, nil
 		})
+		fmt.Println("token", token)
 
 		//---------------------------------------------------------
 		// Detect expiration using ValidationError
@@ -245,11 +260,13 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 				}
 			}
 		}
+		fmt.Println("expired", expired)
 
 		//---------------------------------------------------------
 		// 1) Access token valid → upgrade WS
 		//---------------------------------------------------------
 		if err == nil && token.Valid {
+			fmt.Println("token valid")
 			claims := token.Claims.(jwt.MapClaims)
 			userID, ok := claims["user_id"].(string)
 			if !ok {
@@ -260,6 +277,7 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 
 			wsConn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 			if err != nil {
+				fmt.Println("error upgrading to ws", err)
 				return err
 			}
 
@@ -280,6 +298,7 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 		// 2) Invalid but NOT expired → reject
 		//---------------------------------------------------------
 		if err != nil && !expired {
+			fmt.Println("token invalid")
 			return c.JSON(http.StatusUnauthorized, map[string]string{
 				"error":  "invalid access token",
 				"detail": err.Error(),
@@ -289,8 +308,10 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 		//---------------------------------------------------------
 		// 3) EXPIRED access token → try refresh token cookie
 		//---------------------------------------------------------
+		fmt.Println("checking token expiration")
 		refreshCookie, err := c.Cookie("refresh_token")
 		if err != nil {
+			fmt.Println("refresh token missing")
 			return c.JSON(http.StatusUnauthorized, map[string]string{
 				"error":  "access_token_expired",
 				"detail": "refresh token missing",
@@ -298,6 +319,7 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 		}
 
 		refreshTok := refreshCookie.Value
+		fmt.Println("refresh token", refreshTok)
 
 		var dbUserID string
 		var expiresAt time.Time
@@ -309,12 +331,14 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 		`, refreshTok).Scan(&dbUserID, &expiresAt)
 
 		if err == sql.ErrNoRows {
+			fmt.Println("refresh token invalid")
 			return c.JSON(http.StatusUnauthorized, map[string]string{
 				"error": "invalid refresh token",
 			})
 		}
 
 		if time.Now().After(expiresAt) {
+			fmt.Println("refresh token expired")
 			return c.JSON(http.StatusUnauthorized, map[string]string{
 				"error": "refresh token expired",
 			})
@@ -324,7 +348,9 @@ func wsHandler(h *Hub) echo.HandlerFunc {
 		// 4) Refresh token valid → issue new access token
 		//---------------------------------------------------------
 		newAccess, err := generateJWT(dbUserID, 30*time.Minute)
+		fmt.Println("new access token", newAccess)
 		if err != nil {
+			fmt.Println("failed to create new access token")
 			return c.JSON(http.StatusInternalServerError, map[string]string{
 				"error": "failed to create new access token",
 			})
@@ -369,7 +395,7 @@ func readPump(client *Client, h *Hub) {
 			log.Println("invalid payload:", err)
 			continue
 		}
-		if inc.To == "" || inc.Message == "" {
+		if inc.To == "" || inc.Message == "" || inc.TempID == "" {
 			// ignore invalid
 			continue
 		}
@@ -384,6 +410,7 @@ func readPump(client *Client, h *Hub) {
 			out := wsOutgoing{
 				From:    client.UserID,
 				Message: inc.Message,
+				TempID:  inc.TempID,
 			}
 			// persist with delivered = true
 			msgID, createdAt, err = insertMessage(client.UserID, inc.To, inc.Message, true)
@@ -419,6 +446,7 @@ func readPump(client *Client, h *Hub) {
 			MessageID: msgID,
 			Delivered: delivered,
 			CreatedAt: createdAt,
+			TempID:    inc.TempID,
 		}
 		ackBytes, _ := json.Marshal(ack)
 
@@ -442,18 +470,22 @@ func writePump(client *Client, h *Hub) {
 	for {
 		select {
 		case msg, ok := <-client.Send:
+			fmt.Println("writing message to client")
 			client.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if !ok {
 				// hub closed the channel
+				fmt.Println("inside !ok", ok)
 				client.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 			w, err := client.Conn.NextWriter(websocket.TextMessage)
 			if err != nil {
+				fmt.Println("inside err!=nil 1", err)
 				return
 			}
 			w.Write(msg)
 			if err := w.Close(); err != nil {
+				fmt.Println("inside err!=nil 2", err)
 				return
 			}
 		case <-ticker.C:
@@ -485,12 +517,66 @@ func SearchUsers(db *sql.DB, query string, excludeID string) ([]SearchResult, er
 	results := []SearchResult{}
 	for rows.Next() {
 		var u SearchResult
-		if err := rows.Scan(&u.ID, &u.UserName); err != nil {
+		var score float64
+		if err := rows.Scan(&u.ID, &u.UserName, &score); err != nil {
 			return nil, err
 		}
 		results = append(results, u)
 	}
 	return results, nil
+}
+
+func JWTHandler(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		authHeader := c.Request().Header.Get("Authorization")
+		if authHeader == "" {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"error": "missing_authorization_header",
+			})
+		}
+		parts := strings.Split(authHeader, " ") // now split the header because a general header will look like this "Bearer <token>"
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"error": "invalid_authorization_header",
+			})
+		}
+		tokenStr := parts[1]
+
+		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+			}
+			return jwtSecret, nil
+		})
+
+		if err != nil {
+			// token expiration
+			if ve, ok := err.(*jwt.ValidationError); ok {
+				if ve.Errors&jwt.ValidationErrorExpired != 0 {
+					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+						"error":  "access_token_expired",
+						"detail": "Token has expired",
+						"code":   "TOKEN_EXPIRED",
+					})
+				}
+			}
+			// invalid token
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+				"error":  "invalid_token",
+				"detail": err.Error(),
+			})
+
+		}
+
+		if !token.Valid {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"error": "invalid_token",
+			})
+		}
+
+		c.Set("user", token)
+		return next(c)
+	}
 }
 
 func main() {
@@ -528,10 +614,9 @@ func main() {
 
 	// JWT protected routes
 	api := e.Group("/api")
-	api.Use(echojwt.WithConfig(echojwt.Config{
-		SigningKey: jwtSecret,
-	}))
+	api.Use(JWTHandler)
 	api.GET("/search", searchHandler)
+	api.GET("/conversation", conversationHistoryHandler)
 
 	// WebSocket route
 	e.GET("/ws", wsHandler(hub))
@@ -708,11 +793,76 @@ func searchHandler(c echo.Context) error {
 
 	results, err := SearchUsers(db, searchQuery, userID)
 	if err != nil {
+		// --- MANDATORY DEBUG LINE ---
+		// We MUST print the underlying database error before sending the 500
+		log.Printf("Database Error in SearchUsers: %v", err) // <-- ADD THIS LINE
+		// -----------------------------
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database query failed"})
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"results": results,
+	})
+}
+
+// conversationHistoryHandler fetches all conversations for the authenticated user
+func conversationHistoryHandler(c echo.Context) error {
+	// Extract claims from JWT
+	user := c.Get("user").(*jwt.Token)
+	claims := user.Claims.(jwt.MapClaims)
+	userID := claims["user_id"].(string)
+	contactID := c.QueryParam("contact_id")
+	var rows *sql.Rows
+	var err error
+	// Fetch all messages where user is either sender or receiver
+	if contactID != "" {
+		// Case 2: Fetch history for a SPECIFIC contact
+		rows, err = db.Query(`
+            SELECT id, sender_id, receiver_id, content, delivered, created_at
+            FROM messages
+            WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)
+            ORDER BY created_at ASC
+        `, userID, contactID)
+	} else {
+		// Case 1: Fetch ALL history for the authenticated user
+		rows, err = db.Query(`
+            SELECT id, sender_id, receiver_id, content, delivered, created_at
+            FROM messages
+            WHERE sender_id = $1 OR receiver_id = $1
+            ORDER BY created_at ASC
+        `, userID)
+	}
+
+	if err != nil {
+		log.Printf("Error fetching conversation history: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database query failed"})
+	}
+	defer rows.Close()
+
+	var messages []ConversationMessage
+	for rows.Next() {
+		var msg ConversationMessage
+		err := rows.Scan(&msg.MessageID, &msg.SenderID, &msg.ReceiverID, &msg.Content, &msg.Delivered, &msg.CreatedAt)
+		if err != nil {
+			log.Printf("Error scanning message row: %v", err)
+			continue
+		}
+		messages = append(messages, msg)
+	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("Error iterating rows: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to retrieve messages"})
+	}
+
+	// Return empty array if no messages found
+	if messages == nil {
+		messages = []ConversationMessage{}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"messages": messages,
+		"count":    len(messages),
 	})
 }
 
