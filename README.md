@@ -49,9 +49,7 @@ While messaging apps are a common project, this serves as a practical applicatio
    - `messages` - stores message data
 4. Configure appropriate indexing for optimized queries
 
-### Running the Application
 
-[Add specific commands here for running your server]
 
 ## Architecture Overview
 
@@ -101,12 +99,10 @@ Unlike traditional REST APIs (unidirectional, short-lived request-response cycle
 
 - [Official Go Tutorial](https://go.dev/tour/)
 - [Understanding Goroutines](https://www.youtube.com/watch?v=qyM8Pi1KiiM)
-- Trevor Noah standup (for cultural context on "the beginning")
 
 ## Future Enhancements
 
 - API Gateway implementation
 - Load balancer integration
 - Enhanced production-grade architecture
-- [Additional features you're planning]
 
