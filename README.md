@@ -2,6 +2,8 @@
 
 A backend implementation of a real-time messaging application built with Go, featuring WebSocket connections, JWT authentication, and PostgreSQL database integration.
 
+![Image](https://github.com/MohammedAyaan23/Messge-App-Name-Not-Yet-Finalized/blob/ddf10eb3d3409b7c31b4b90fc080eca319a7964a/yo.mp4)
+
 ## Project Motivation
 
 This project was created as a learning journey into Go development, specifically to understand:
