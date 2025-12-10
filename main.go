@@ -621,6 +621,13 @@ func main() {
 	// WebSocket route
 	e.GET("/ws", wsHandler(hub))
 
+	e.GET("/health", func(c echo.Context) error {
+		if err := db.Ping(); err != nil {
+			return c.String(http.StatusInternalServerError, "Database down")
+		}
+		return c.String(http.StatusOK, "OK")
+	})
+
 	fmt.Println("🚀 Server running on http://localhost:8080")
 	fmt.Println("📡 WebSocket endpoint available at ws://localhost:8080/ws?token=JWT_TOKEN")
 	e.Logger.Fatal(e.Start(":8080"))
