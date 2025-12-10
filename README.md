@@ -102,7 +102,7 @@ Unlike traditional REST APIs (unidirectional, short-lived request-response cycle
 
 ## Future Enhancements
 
-- API Gateway implementation
-- Load balancer integration
+- API Gateway implementation -- Done
+- Load balancer integration -- Maybe if microservices are used but right now its a monolith architecture
 - Enhanced production-grade architecture
 
