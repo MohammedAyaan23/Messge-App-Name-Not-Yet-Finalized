@@ -78,7 +78,7 @@ func rateLimitMiddleware(next http.Handler, bucket *Bucket) http.Handler {
 }
 
 func main() {
-	backendURL, err := url.Parse("http://main-app:8080")
+	backendURL, err := url.Parse("")
 	if err != nil {
 		log.Fatalf("Failed to parse backend URL: %v", err)
 	}
