@@ -31,7 +31,7 @@ const (
 // ---------- Global Variables ----------
 var (
 	db        *sql.DB
-	jwtSecret = []byte("MOHAMMED_AYAAN_PASHA")
+	jwtSecret = []byte("")
 	hub       *Hub
 )
 
