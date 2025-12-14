@@ -16,6 +16,7 @@ While messaging apps are a common project, this serves as a practical applicatio
 
 ## Features
 
+- Custom Rate-Limit Proxy (Token Bucket Algorithm)
 - User authentication (signup/login) with JWT tokens
 - Real-time messaging via WebSocket connections
 - User search functionality with similarity matching
