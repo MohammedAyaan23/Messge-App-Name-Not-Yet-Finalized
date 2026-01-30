@@ -635,7 +635,7 @@ func main() {
 
 	fmt.Println("🚀 Server running on http://localhost:8080")
 	fmt.Println("📡 WebSocket endpoint available at ws://localhost:8080/ws?token=JWT_TOKEN")
-	e.Logger.Fatal(e.Start(":8080"))
+	e.Logger.Fatal(e.Start(":" + port))
 }
 
 func loginHandler(c echo.Context) error {
