@@ -17,13 +17,13 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o main . # -ldflags="-w -s": This strips debug information from your binary. It makes the file size smaller, which means  Render service starts up faster.
 
 # Final stage
 FROM alpine:latest
 
 # Install ca-certificates for HTTPS requests
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates tzdata # tzdata: Added this to the final stage. If  messaging app handles timestamps (which it does!), having tzdata ensures Go can handle timezones correctly.
 
 WORKDIR /root/
 
