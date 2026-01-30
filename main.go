@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -20,12 +21,12 @@ import (
 )
 
 // ---------- Database Constants ----------
-const (
-	DB_USER     = ""
-	DB_PASSWORD = ""
-	DB_NAME     = ""
-	DB_HOST     = "" // <-- this is for building docker file  but on local testing use "localhost"
-	DB_PORT     = ""
+var (
+	DB_USER     = os.Getenv("DB_USER")
+	DB_PASSWORD = os.Getenv("DB_PASSWORD")
+	DB_NAME     = os.Getenv("DB_NAME")
+	DB_HOST     = os.Getenv("DB_HOST")
+	DB_PORT     = os.Getenv("DB_PORT")
 )
 
 // ---------- Global Variables ----------
