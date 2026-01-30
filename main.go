@@ -582,6 +582,10 @@ func JWTHandler(next echo.HandlerFunc) echo.HandlerFunc {
 
 func main() {
 	var err error
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // Fallback for local development
+	}
 
 	// Initialize database connection
 	psqlInfo := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
