@@ -589,7 +589,7 @@ func main() {
 	}
 
 	// Initialize database connection
-	psqlInfo := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=require",
+	psqlInfo := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME)
 
 	db, err = sql.Open("postgres", psqlInfo)
