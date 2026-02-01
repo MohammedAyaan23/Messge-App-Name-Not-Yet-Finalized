@@ -16,6 +16,7 @@ import (
 	"github.com/golang-jwt/jwt"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -609,8 +610,21 @@ func main() {
 	hub = NewHub()
 	go hub.Run()
 
+	frontendURL := os.Getenv("FRONTEND_URL")
+	if frontendURL == "" {
+		log.Fatal("FRONTEND_URL environment variable is not set")
+	}
 	// Create Echo instance
 	e := echo.New()
+	// Add CORS Middleware
+	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
+		// Allow your local dev environment AND your future Render frontend URL
+		AllowOrigins: []string{frontendURL, "http://localhost:3000"},
+		AllowMethods: []string{http.MethodGet, http.MethodPut, http.MethodPost, http.MethodDelete, http.MethodOptions},
+		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
+		// Important for cookies (refresh tokens)
+		AllowCredentials: true,
+	}))
 
 	// Public routes
 	e.POST("/signup", signupHandler)
