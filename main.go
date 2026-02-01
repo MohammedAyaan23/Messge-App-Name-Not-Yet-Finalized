@@ -229,7 +229,7 @@ func deliverOfflineMessages(client *Client) {
 // ---------- WebSocket Handler ----------
 func wsHandler(h *Hub) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		fmt.Println("inside ws handler")
+		log.Println("websocket handler hit")
 
 		tokenStr := c.QueryParam("token")
 		if tokenStr == "" {
@@ -627,6 +627,7 @@ func main() {
 	e.GET("/ws", wsHandler(hub))
 
 	e.GET("/health", func(c echo.Context) error {
+		log.Println("health check api hit")
 		if err := db.Ping(); err != nil {
 			return c.String(http.StatusInternalServerError, "Database down")
 		}
@@ -639,6 +640,7 @@ func main() {
 }
 
 func loginHandler(c echo.Context) error {
+	log.Println("login api hit")
 	var creds struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -716,6 +718,7 @@ func loginHandler(c echo.Context) error {
 }
 
 func refreshTokenHandler(c echo.Context) error {
+	log.Println("refresh token api hit")
 	// read refresh token from cookie
 	cookie, err := c.Cookie("refresh_token")
 	if err != nil {
@@ -793,6 +796,7 @@ func refreshTokenHandler(c echo.Context) error {
 }
 
 func searchHandler(c echo.Context) error {
+	log.Println("search api hit")
 	// Extract claims from JWT
 	user := c.Get("user").(*jwt.Token)
 	claims := user.Claims.(jwt.MapClaims)
@@ -819,6 +823,7 @@ func searchHandler(c echo.Context) error {
 
 // conversationHistoryHandler fetches all conversations for the authenticated user
 func conversationHistoryHandler(c echo.Context) error {
+	log.Println("conversation history api hit")
 	// Extract claims from JWT
 	user := c.Get("user").(*jwt.Token)
 	claims := user.Claims.(jwt.MapClaims)
@@ -879,6 +884,7 @@ func conversationHistoryHandler(c echo.Context) error {
 }
 
 func signupHandler(c echo.Context) error {
+	log.Println("signup api hit")
 	u := new(User)
 	if err := c.Bind(u); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
