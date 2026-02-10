@@ -636,7 +636,7 @@ func main() {
 	// Add CORS Middleware
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		// Allow your local dev environment AND your future Render frontend URL
-		AllowOrigins: []string{frontendURL, "http://localhost:3000", "https://1ripmk0hlg82sctoh0udccymhld2u2uflf9q6h8r7t8jaypq8d-h861731785.scf.usercontent.goog"},
+		AllowOrigins: []string{frontendURL, "http://localhost:3000", "https://1ripmk0hlg82sctoh0udccymhld2u2uflf9q6h8r7t8jaypq8d-h861731785.scf.usercontent.goog", "https://nebula-chat-az8d.onrender.com"},
 		AllowMethods: []string{http.MethodGet, http.MethodPut, http.MethodPost, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
 		// Important for cookies (refresh tokens)
