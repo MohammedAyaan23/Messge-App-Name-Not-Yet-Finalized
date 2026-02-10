@@ -67,22 +67,24 @@ type wsIncoming struct {
 }
 
 type wsOutgoing struct {
-	From      string    `json:"from"`
-	Message   string    `json:"message"`
-	MessageID string    `json:"message_id"`
-	Delivered bool      `json:"delivered"`
-	CreatedAt time.Time `json:"created_at"`
-	TempID    string    `json:"temp_id"`
+	From         string    `json:"from"`
+	FromUserName string    `json:"from_username"`
+	Message      string    `json:"message"`
+	MessageID    string    `json:"message_id"`
+	Delivered    bool      `json:"delivered"`
+	CreatedAt    time.Time `json:"created_at"`
+	TempID       string    `json:"temp_id"`
 }
 
 // Conversation History Model
 type ConversationMessage struct {
-	MessageID  string    `json:"message_id"`
-	SenderID   string    `json:"sender_id"`
-	ReceiverID string    `json:"receiver_id"`
-	Content    string    `json:"content"`
-	Delivered  bool      `json:"delivered"`
-	CreatedAt  time.Time `json:"created_at"`
+	MessageID      string    `json:"message_id"`
+	SenderID       string    `json:"sender_id"`
+	SenderUserName string    `json:"sender_username"`
+	ReceiverID     string    `json:"receiver_id"`
+	Content        string    `json:"content"`
+	Delivered      bool      `json:"delivered"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // ---------- WebSocket Client & Hub ----------
@@ -146,6 +148,17 @@ func insertMessage(senderID, receiverID, content string, delivered bool) (string
 	return id, createdAt, err
 }
 
+// getUserName fetches username by user ID
+func getUserName(userID string) string {
+	var username string
+	err := db.QueryRow(`SELECT user_name FROM users WHERE id = $1`, userID).Scan(&username)
+	if err != nil {
+		log.Printf("Error fetching username for user %s: %v", userID, err)
+		return "Unknown User"
+	}
+	return username
+}
+
 // fetchUndeliveredMessages retrieves all undelivered messages for a user
 func fetchUndeliveredMessages(receiverID string) ([]wsOutgoing, error) {
 	rows, err := db.Query(`
@@ -166,7 +179,8 @@ func fetchUndeliveredMessages(receiverID string) ([]wsOutgoing, error) {
 		if err != nil {
 			return nil, err
 		}
-		msg.Delivered = false // will be marked true after sending
+		msg.Delivered = false                    // will be marked true after sending
+		msg.FromUserName = getUserName(msg.From) // Fetch sender's username
 		messages = append(messages, msg)
 	}
 
@@ -410,9 +424,10 @@ func readPump(client *Client, h *Hub) {
 		if connected {
 			// Build outgoing message
 			out := wsOutgoing{
-				From:    client.UserID,
-				Message: inc.Message,
-				TempID:  inc.TempID,
+				From:         client.UserID,
+				FromUserName: getUserName(client.UserID),
+				Message:      inc.Message,
+				TempID:       inc.TempID,
 			}
 			// persist with delivered = true
 			msgID, createdAt, err = insertMessage(client.UserID, inc.To, inc.Message, true)
@@ -443,12 +458,13 @@ func readPump(client *Client, h *Hub) {
 
 		// ACK back to sender
 		ack := wsOutgoing{
-			From:      client.UserID,
-			Message:   inc.Message,
-			MessageID: msgID,
-			Delivered: delivered,
-			CreatedAt: createdAt,
-			TempID:    inc.TempID,
+			From:         client.UserID,
+			FromUserName: getUserName(client.UserID),
+			Message:      inc.Message,
+			MessageID:    msgID,
+			Delivered:    delivered,
+			CreatedAt:    createdAt,
+			TempID:       inc.TempID,
 		}
 		ackBytes, _ := json.Marshal(ack)
 
@@ -610,10 +626,11 @@ func main() {
 	hub = NewHub()
 	go hub.Run()
 
-	frontendURL := os.Getenv("FRONTEND_URL")
-	if frontendURL == "" {
-		log.Fatal("FRONTEND_URL environment variable is not set")
-	}
+	// frontendURL := os.Getenv("FRONTEND_URL")
+	// if frontendURL == "" {
+	// 	log.Fatal("FRONTEND_URL environment variable is not set")
+	// }
+	frontendURL := "https://nebula-chat-mxrl.onrender.com"
 	// Create Echo instance
 	e := echo.New()
 	// Add CORS Middleware
@@ -878,6 +895,8 @@ func conversationHistoryHandler(c echo.Context) error {
 			log.Printf("Error scanning message row: %v", err)
 			continue
 		}
+		// Fetch sender's username
+		msg.SenderUserName = getUserName(msg.SenderID)
 		messages = append(messages, msg)
 	}
 
